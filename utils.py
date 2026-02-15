@@ -6,7 +6,6 @@ import numpy as np
 from typing import Tuple
 
 # Tesseract Configuration
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 def preprocess_image(image_path: str):
     """
