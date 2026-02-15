@@ -569,7 +569,7 @@ else:
                                     {"role": "system", "content": "You are a helpful financial advisor."},
                                     {"role": "user", "content": prompt}
                                 ],
-                                model="mixtral-8x7b-32768",
+                                model="llama-3.1-8b-instant",
                                 temperature=0.7,
                                 max_tokens=200
                             )
