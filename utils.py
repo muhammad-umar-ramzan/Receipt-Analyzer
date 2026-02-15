@@ -212,7 +212,7 @@ def alternative_parse(lines):
     return data
 
 # ----------------------------
-# ENHANCED CATEGORIZATION FOR ELECTRONICS/PROJECTS
+# ENHANCED CATEGORIZATION FOR ELECTRONICS
 # ----------------------------
 def categorize_bom(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
     """
