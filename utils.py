@@ -4,11 +4,6 @@ import pandas as pd
 import re
 from typing import Tuple
 
-<<<<<<< HEAD
-=======
-# Tesseract Configuration
-
->>>>>>> c545a4df5b949c45450b3dfd1f2471daf7bd7a5b
 def preprocess_image(image_path: str):
     """
     Preprocess the image for OCR:
