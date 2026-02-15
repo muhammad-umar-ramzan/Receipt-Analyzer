@@ -40,7 +40,6 @@ st.markdown("""
         text-align: center;
         padding: 2rem;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
         border-radius: 15px;
         margin-bottom: 2rem;
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
@@ -57,11 +56,12 @@ st.markdown("""
         padding: 10px;
         margin: 5px 0;
         background-color: #f0f2f6;
+        color:black;
         border-radius: 5px;
         border-left: 3px solid #667eea;
     }
     .metric-card {
-        background: black;
+        background: white;
         padding: 20px;
         border-radius: 10px;
         box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
