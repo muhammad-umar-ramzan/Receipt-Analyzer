@@ -54,7 +54,7 @@ st.markdown("""
     }
     .category-box {
         padding: 10px;
-        margin: 5px 0;
+        margin: 5px 2px;
         background-color: #f0f2f6;
         color:black;
         border-radius: 5px;
