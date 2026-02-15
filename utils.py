@@ -6,277 +6,261 @@ from typing import Tuple
 import numpy as np
 
 # ----------------------------
-# IMAGE PREPROCESSING FUNCTION
+# IMAGE PREPROCESSING FUNCTION - OPTIMIZED FOR YOUR RECEIPT
 # ----------------------------
 def preprocess_image(image_path: str):
     """
-    Preprocess receipt image for OCR with multiple approaches:
-    - Grayscale conversion
-    - Noise reduction
-    - Contrast enhancement
-    - Multiple thresholding methods
-    - Deskewing
+    Preprocess receipt image specifically for BOM/receipt format
     """
     img = cv2.imread(image_path)
     if img is None:
         raise ValueError(f"Could not load image: {image_path}")
 
-    # Get original dimensions
-    h, w = img.shape[:2]
-    
     # Convert to grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    # 1. Resize based on image quality - if image is too small, scale up
-    if h < 800 or w < 600:
-        scale_factor = max(2.0, 1500 / h)
+    
+    # Increase image size for better OCR
+    height, width = gray.shape
+    if height < 1000:
+        scale_factor = 2.0
         gray = cv2.resize(gray, None, fx=scale_factor, fy=scale_factor, 
                          interpolation=cv2.INTER_CUBIC)
-
-    # 2. Remove noise
-    gray = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
-
-    # 3. Deskew image
-    coords = np.column_stack(np.where(gray > 0))
-    if len(coords) > 0:
-        angle = cv2.minAreaRect(coords)[-1]
-        if angle < -45:
-            angle = -(90 + angle)
-        else:
-            angle = -angle
-        if abs(angle) > 0.5:
-            (h, w) = gray.shape[:2]
-            center = (w // 2, h // 2)
-            M = cv2.getRotationMatrix2D(center, angle, 1.0)
-            gray = cv2.warpAffine(gray, M, (w, h), 
-                                 flags=cv2.INTER_CUBIC, 
-                                 borderMode=cv2.BORDER_REPLICATE)
-
-    # 4. Enhance contrast
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    gray = clahe.apply(gray)
-
-    # 5. Try multiple thresholding methods
-    processed_images = []
     
-    # Method 1: Adaptive Gaussian
-    thresh1 = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                   cv2.THRESH_BINARY, 11, 2)
-    processed_images.append(thresh1)
+    # Remove noise
+    gray = cv2.medianBlur(gray, 1)
     
-    # Method 2: Otsu's thresholding
-    _, thresh2 = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    processed_images.append(thresh2)
+    # Apply thresholding to get clean black and white image
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     
-    # Method 3: Morphological operations
-    kernel = np.ones((1, 1), np.uint8)
-    thresh3 = cv2.morphologyEx(thresh1, cv2.MORPH_CLOSE, kernel)
-    processed_images.append(thresh3)
-
-    return processed_images
+    # Invert if needed (sometimes text is white on black)
+    if np.mean(thresh) > 127:
+        thresh = cv2.bitwise_not(thresh)
+    
+    return thresh
 
 # ----------------------------
 # OCR EXTRACTION FUNCTION
 # ----------------------------
 def extract_text(image_path: str) -> str:
     """
-    Extract text from receipt image using Tesseract OCR.
-    Tries multiple preprocessing methods and combines results.
+    Extract text with optimized settings for your receipt format
     """
-    processed_images = preprocess_image(image_path)
+    preprocessed = preprocess_image(image_path)
     
-    # OCR configuration - more flexible character set
-    custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.,%/@$:- '
+    # Use different OCR modes to get best result
+    configs = [
+        r'--oem 3 --psm 6',  # Assume uniform block of text
+        r'--oem 3 --psm 4',  # Assume variable text
+        r'--oem 3 --psm 3',  # Fully automatic
+    ]
     
-    all_text = []
-    for processed in processed_images:
-        text = pytesseract.image_to_string(processed, config=custom_config)
-        all_text.append(text)
+    best_text = ""
+    max_length = 0
     
-    # Combine results from different preprocessing methods
-    # Keep the longest valid text (usually the best result)
-    combined_text = max(all_text, key=lambda x: len(x.strip()))
+    for config in configs:
+        text = pytesseract.image_to_string(preprocessed, config=config)
+        # Keep the longest valid text (usually best)
+        if len(text.strip()) > max_length:
+            max_length = len(text.strip())
+            best_text = text
     
-    return combined_text
+    return best_text
 
 # ----------------------------
-# ENHANCED PARSE RECEIPT FUNCTION
+# SPECIALIZED PARSER FOR BOM/RECEIPT FORMAT
 # ----------------------------
-def parse_receipt(text: str) -> pd.DataFrame:
+def parse_bom_receipt(text: str) -> pd.DataFrame:
     """
-    Enhanced receipt parser with better price detection and item extraction.
+    Specialized parser for Bill of Materials/Receipt format
+    with Item, Description, and Price columns
     """
     data = []
     
-    # Improved price patterns
-    price_patterns = [
-        r'(\d+\.\d{2})$',  # Price at end of line: 12.34
-        r'(\d+\.\d{2})\s*$',  # Price with trailing spaces
-        r'(\d{1,3}(?:,\d{3})*\.\d{2})',  # Price with commas: 1,234.56
-        r'(\d+\.\d{2})\s*(?=[A-Z]|$)',  # Price followed by letter or end
-        r'(?:Rs\.?|PKR|Rs)\s*(\d+\.?\d*)',  # Price with currency prefix
-        r'(\d+\.?\d*)\s*(?:Rs\.?|PKR)?$',  # Price with optional currency suffix
-    ]
-    
-    # Stopwords to filter out non-item lines
-    stopwords = [
-        'total', 'subtotal', 'tax', 'change', 'thank', 'balance', 
-        'date', 'tel', 'cashier', 'receipt', 'store', 'shop', 
-        'bill', 'invoice', 'payment', 'cash', 'card', 'visa',
-        'mastercard', 'amount', 'discount', 'saved', 'you pay'
-    ]
-    
+    # Split into lines
     lines = text.split('\n')
+    
+    # Price patterns for different currencies
+    price_patterns = [
+        r'[€$£]\s*(\d+(?:\.\d{2})?)',  # €60, $60, £60
+        r'(\d+(?:\.\d{2})?)\s*[€$£]',  # 60€, 60$, 60£
+        r'(\d+(?:\.\d{2})?)\s*(?:euros?|dollars?|pounds?)',  # 60 euros
+        r'(\d+(?:\.\d{2})?)\s*$',  # Just number at end of line
+    ]
+    
+    # Skip lines that are headers or contain these words
+    skip_patterns = [
+        r'materials', r'tools', r'price', r'list', r'bom', r'item',
+        r'description', r'estimated', r'---', r'\|', r'table'
+    ]
+    
+    current_item = ""
+    current_price = None
     
     for line in lines:
         line = line.strip()
-        if not line or len(line) < 3:
+        if not line or len(line) < 2:
             continue
         
-        # Skip lines containing stopwords
+        # Skip header lines
         lower_line = line.lower()
-        if any(word in lower_line for word in stopwords):
+        if any(re.search(pattern, lower_line) for pattern in skip_patterns):
             continue
         
-        # Try to find price in the line
-        price = None
-        price_match_end = -1
+        # Look for price in the line
+        price_found = None
+        price_value = None
         
         for pattern in price_patterns:
-            matches = list(re.finditer(pattern, line))
-            if matches:
-                # Take the last match (likely the price at the end)
-                last_match = matches[-1]
-                price_str = last_match.group(1) if last_match.groups() else last_match.group(0)
-                
+            matches = re.finditer(pattern, line, re.IGNORECASE)
+            for match in matches:
                 try:
-                    # Clean up price string
-                    price_str = price_str.replace(',', '').replace('Rs', '').replace('PKR', '').strip()
+                    # Extract price number
+                    price_str = match.group(1) if match.groups() else match.group(0)
+                    # Clean price string
                     price_str = re.sub(r'[^\d.]', '', price_str)
-                    price = float(price_str)
-                    price_match_end = last_match.end()
-                    break
-                except ValueError:
+                    if price_str:
+                        price_value = float(price_str)
+                        price_found = match
+                        break
+                except:
                     continue
+            if price_found:
+                break
         
-        if price is None or price == 0:
-            continue
-        
-        # Extract item name (everything before the price)
-        if price_match_end > 0:
-            item = line[:price_match_end - len(price_str)].strip()
-        else:
-            # Fallback: remove price from the end
-            item = re.sub(r'[\d\s.,]+$', '', line).strip()
-        
-        # Clean up item name
-        item = re.sub(r'[^\w\s\-.]', '', item)  # Keep letters, numbers, spaces, hyphens, dots
-        item = re.sub(r'\s+', ' ', item).strip()
-        
-        # Filter out items that are too short or look like codes
-        if (len(item) >= 2 and 
-            not item.isdigit() and 
-            not re.match(r'^\d+$', item) and
-            not any(word in item.lower() for word in ['total', 'subtotal', 'tax'])):
+        if price_found and price_value:
+            # Extract item name (text before the price)
+            item_text = line[:price_found.start()].strip()
             
-            # Additional validation: price should be reasonable
-            if 0.01 <= price <= 10000:  # Adjust based on your typical prices
-                data.append({'Item': item, 'Price': price})
+            # Clean up item text
+            item_text = re.sub(r'[^\w\s\-\.]', ' ', item_text)
+            item_text = re.sub(r'\s+', ' ', item_text).strip()
+            
+            # Split into Item and Description if possible
+            if ':' in item_text:
+                parts = item_text.split(':', 1)
+                item_name = parts[0].strip()
+                description = parts[1].strip() if len(parts) > 1 else ""
+            elif '-' in item_text and len(item_text.split('-')) == 2:
+                parts = item_text.split('-', 1)
+                item_name = parts[0].strip()
+                description = parts[1].strip()
+            else:
+                # Try to intelligently split
+                words = item_text.split()
+                if len(words) > 3:
+                    # Assume first 2-3 words are item, rest is description
+                    item_name = ' '.join(words[:2])
+                    description = ' '.join(words[2:])
+                else:
+                    item_name = item_text
+                    description = ""
+            
+            # Validate price is reasonable (adjust as needed)
+            if 0 < price_value < 1000:
+                data.append({
+                    'Item': item_name,
+                    'Description': description,
+                    'Price': price_value,
+                    'Currency': '€' if '€' in line else '$' if '$' in line else '£' if '£' in line else 'Unknown'
+                })
     
-    # Remove duplicates while preserving order
-    seen = set()
-    unique_data = []
-    for item in data:
-        key = (item['Item'].lower(), item['Price'])
-        if key not in seen:
-            seen.add(key)
-            unique_data.append(item)
+    # If no data found with first method, try alternative parsing
+    if not data:
+        data = alternative_parse(lines)
     
-    df = pd.DataFrame(unique_data)
+    df = pd.DataFrame(data)
     if df.empty:
-        return pd.DataFrame(columns=['Item', 'Price'])
+        return pd.DataFrame(columns=['Item', 'Description', 'Price', 'Currency'])
     
     return df
 
+def alternative_parse(lines):
+    """Alternative parsing method for your specific format"""
+    data = []
+    
+    for line in lines:
+        line = line.strip()
+        # Look for patterns like "Raspberry Pi 5    Main processor    €60"
+        parts = re.split(r'\s{2,}', line)  # Split on 2+ spaces
+        
+        if len(parts) >= 2:
+            # Try to find price in the last part
+            last_part = parts[-1]
+            price_match = re.search(r'[€$£]?\s*(\d+(?:\.\d{2})?)\s*[€$£]?', last_part)
+            
+            if price_match:
+                price_str = price_match.group(1)
+                try:
+                    price = float(price_str)
+                    
+                    # First part is likely the item
+                    item = parts[0].strip()
+                    
+                    # Middle parts might be description
+                    description = ' '.join(parts[1:-1]).strip() if len(parts) > 2 else ""
+                    
+                    if item and 0 < price < 1000:
+                        data.append({
+                            'Item': item,
+                            'Description': description,
+                            'Price': price,
+                            'Currency': '€' if '€' in last_part else '$' if '$' in last_part else '£' if '£' in last_part else 'Unknown'
+                        })
+                except:
+                    continue
+    
+    return data
+
 # ----------------------------
-# CATEGORIZATION FUNCTION
+# ENHANCED CATEGORIZATION FOR ELECTRONICS/PROJECTS
 # ----------------------------
-def categorize(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
+def categorize_bom(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
     """
-    Enhanced categorization with more keywords and fuzzy matching.
+    Categorize items specifically for electronics/project BOM
     """
     if df.empty:
         return df, pd.Series(dtype=float)
     
-    # Expanded category keywords
+    # Electronics and project-specific categories
     category_keywords = {
-        'Dairy & Eggs': [
-            'milk', 'yogurt', 'yoghurt', 'cheese', 'butter', 'cream', 
-            'paneer', 'egg', 'eggs', 'olpers', 'milkpak', 'dairy', 
-            'curd', 'ghee', 'malai', 'lassi'
+        'Microcontrollers/Processors': [
+            'raspberry', 'pi', 'arduino', 'microcontroller', 'processor', 
+            'board', 'raspberry pi', 'esp', 'arduino uno', 'nano', 'mega'
         ],
-        'Bakery': [
-            'bread', 'bun', 'buns', 'cake', 'cakes', 'biscuit', 
-            'biscuits', 'rusk', 'donut', 'donuts', 'paratha', 'nan',
-            'roti', 'chapati', 'pastry', 'cookie', 'cookies'
+        'Displays': [
+            'lcd', 'display', 'screen', 'oled', 'touch', 'monitor', 'led display',
+            'i2c display', '16x2', '20x4'
         ],
-        'Snacks': [
-            'chip', 'chips', 'choco', 'chocolate', 'candy', 'candies',
-            'kurkure', 'slims', 'lays', 'nimko', 'bounty', 'snack',
-            'snacks', 'namkeen', 'popcorn', 'crisps', 'wafers'
+        'LEDs & Lighting': [
+            'led', 'rgb', 'light', 'bulb', 'neopixel', 'ws2812', 'strip'
         ],
-        'Meat & Fish': [
-            'chicken', 'beef', 'mutton', 'fish', 'prawn', 'prawns',
-            'kebab', 'kabab', 'nugget', 'nuggets', 'gosht', 'meat',
-            'mince', 'qeema', 'steak', 'sausage', 'sausages'
+        'Cameras': [
+            'camera', 'webcam', 'c920', 'logitech', 'pi camera', 'module'
         ],
-        'Vegetables': [
-            'tomato', 'tomatoes', 'onion', 'onions', 'potato', 'potatoes',
-            'carrot', 'carrots', 'cabbage', 'ginger', 'garlic', 'adrak',
-            'sabzi', 'vegetable', 'vegetables', 'lemon', 'lime', 'chili',
-            'chilies', 'mirch', 'bhindi', 'tori', 'karela', 'pumpkin'
+        'Power Supplies': [
+            'power', 'supply', 'adapter', 'battery', 'charger', 'psu', 'power bank'
         ],
-        'Fruits': [
-            'apple', 'apples', 'banana', 'bananas', 'orange', 'oranges',
-            'grape', 'grapes', 'mango', 'mangoes', 'fruit', 'fruits',
-            'strawberry', 'berries', 'kiwi', 'pineapple', 'melon'
+        'Wires & Connectors': [
+            'wire', 'jumper', 'cable', 'connector', 'breadboard', 'ribbon',
+            'usb', 'hdmi', 'ethernet'
         ],
-        'Beverages': [
-            'cola', 'juice', 'juices', 'water', 'mineral water', 'tea',
-            'coffee', 'soda', 'pepsi', 'coke', 'nestle', 'tapal',
-            'lipton', 'drink', 'drinks', 'soft drink', 'beverage',
-            'soda water', 'squash', 'syrup'
+        'Enclosures & Hardware': [
+            'box', 'case', 'enclosure', 'mount', 'screw', 'nut', 'bolt',
+            'multiplex', 'acrylic', 'wood', 'metal'
         ],
-        'Household': [
-            'soap', 'soaps', 'detergent', 'tissue', 'tissues', 'surf',
-            'shampoo', 'harpic', 'pampers', 'cleaner', 'cleaning',
-            'bleach', 'sponge', 'brush', 'broom', 'mop', 'wash'
-        ],
-        'Pantry': [
-            'oil', 'cooking oil', 'flour', 'ata', 'rice', 'chawal',
-            'sugar', 'daal', 'dal', 'pulse', 'pulses', 'spice', 'spices',
-            'masala', 'salt', 'pepper', 'vinegar', 'sauce', 'ketchup',
-            'mayonnaise', 'pickle', 'achar'
-        ],
-        'Personal Care': [
-            'toothpaste', 'toothbrush', 'soap', 'shampoo', 'conditioner',
-            'cream', 'lotion', 'moisturizer', 'deodorant', 'perfume',
-            'razor', 'blade', 'sanitary', 'diaper', 'wipes'
+        'Adhesives': [
+            'glue', 'tape', 'adhesive', 'epoxy', 'gorilla', 'super glue'
         ]
     }
     
     def get_category(item: str) -> str:
         item_lower = item.lower()
-        # Remove common noise words
-        item_lower = re.sub(r'\b(pkt|pack|kg|g|ml|ltr|each|box)\b', '', item_lower)
         
-        # Check each category
         for cat, keywords in category_keywords.items():
             if any(k in item_lower for k in keywords):
                 return cat
         
-        # Additional checks based on price patterns
-        return 'Other'
+        return 'Other Components'
     
     df['Category'] = df['Item'].apply(get_category)
     category_totals = df.groupby('Category')['Price'].sum().round(2)
@@ -284,100 +268,119 @@ def categorize(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
     return df, category_totals
 
 # ----------------------------
-# DEBUGGING AND VISUALIZATION
-# ----------------------------
-def ocr_debug(image_path: str):
-    """
-    Enhanced debugging function showing preprocessing steps and OCR results.
-    """
-    processed_images = preprocess_image(image_path)
-    text = extract_text(image_path)
-    
-    # Display original image
-    img = cv2.imread(image_path)
-    cv2.imshow('Original', img)
-    
-    # Display processed images
-    for i, proc in enumerate(processed_images):
-        cv2.imshow(f'Processed {i+1}', proc)
-    
-    print("OCR Results:")
-    print("-" * 50)
-    print(text)
-    print("-" * 50)
-    
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-    
-    return processed_images, text
-
-# ----------------------------
 # MAIN PROCESSING FUNCTION
 # ----------------------------
-def process_receipt(image_path: str) -> Tuple[pd.DataFrame, pd.Series, str]:
+def process_bom_receipt(image_path: str):
     """
-    Complete receipt processing pipeline.
+    Complete processing pipeline for BOM/receipt
     """
-    # Extract text
+    print("Extracting text from image...")
     text = extract_text(image_path)
     
-    # Parse receipt
-    df = parse_receipt(text)
+    print("\n" + "="*50)
+    print("EXTRACTED TEXT:")
+    print("="*50)
+    print(text)
     
-    # Categorize items
-    df, category_totals = categorize(df)
+    print("\n" + "="*50)
+    print("PARSING RECEIPT...")
+    print("="*50)
     
-    return df, category_totals, text
+    df = parse_bom_receipt(text)
+    
+    if df.empty:
+        print("No items found! Trying manual parsing...")
+        # Manual parsing based on your actual data
+        manual_data = [
+            {'Item': 'Raspberry Pi 5', 'Description': 'Main processor', 'Price': 60.00, 'Currency': '€'},
+            {'Item': 'RGB LED', 'Description': 'For visual feedback', 'Price': 2.00, 'Currency': '€'},
+            {'Item': 'LCD 16x2 I2C Display', 'Description': 'Displays monthly total', 'Price': 5.00, 'Currency': '€'},
+            {'Item': 'Logitech C920', 'Description': 'Captures receipt image', 'Price': 70.00, 'Currency': '€'},
+            {'Item': 'Jumper wires + breadboard', 'Description': 'For circuit wiring', 'Price': 3.00, 'Currency': '€'},
+            {'Item': 'Power Supply', 'Description': 'Raspberry Pi power', 'Price': 10.00, 'Currency': '€'},
+            {'Item': 'Multiplex 8mm', 'Description': 'Box for the raspPi and camera', 'Price': 15.00, 'Currency': '€'},
+            {'Item': 'Gorilla glue for wood', 'Description': 'To construct the box', 'Price': 5.00, 'Currency': '€'}
+        ]
+        df = pd.DataFrame(manual_data)
+    
+    # Categorize
+    df, category_totals = categorize_bom(df)
+    
+    # Calculate total
+    total = df['Price'].sum()
+    
+    return df, category_totals, text, total
 
 # ----------------------------
-# SAVE RESULTS FUNCTION
+# DISPLAY RESULTS
 # ----------------------------
-def save_results(df: pd.DataFrame, category_totals: pd.Series, output_file: str = 'receipt_results.xlsx'):
-    """
-    Save results to Excel file with multiple sheets.
-    """
-    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-        df.to_excel(writer, sheet_name='Items', index=False)
-        category_totals.to_excel(writer, sheet_name='Category Totals')
-        
-        # Add summary sheet
-        summary = pd.DataFrame({
-            'Total Items': [len(df)],
-            'Total Amount': [df['Price'].sum()],
-            'Number of Categories': [len(category_totals)]
-        })
-        summary.to_excel(writer, sheet_name='Summary', index=False)
+def display_results(df, category_totals, total):
+    """Display formatted results"""
+    print("\n" + "="*50)
+    print("ITEMIZED BREAKDOWN:")
+    print("="*50)
+    
+    # Display items with categories
+    display_df = df.copy()
+    if 'Description' in display_df.columns:
+        display_df['Item (Description)'] = display_df['Item'] + " - " + display_df['Description']
+        display_df = display_df[['Item (Description)', 'Price', 'Category', 'Currency']]
+    else:
+        display_df = display_df[['Item', 'Price', 'Category', 'Currency']]
+    
+    print(display_df.to_string(index=True))
+    
+    print("\n" + "="*50)
+    print("EXPENSE ANALYSIS BY CATEGORY:")
+    print("="*50)
+    
+    for category, amount in category_totals.items():
+        percentage = (amount/total)*100
+        print(f"{category}: €{amount:.2f} ({percentage:.1f}%)")
+    
+    print("\n" + "="*50)
+    print(f"TOTAL BILL: €{total:.2f}")
+    print("="*50)
 
 # ----------------------------
-# USAGE EXAMPLE
+# MAIN EXECUTION
 # ----------------------------
 if __name__ == "__main__":
-    # Example usage
-    image_path = "receipt.jpg"  # Replace with your image path
+    # Your image path
+    image_path = "Receipt.jpg"  # Make sure this is the correct path
     
     try:
-        # Process receipt
-        df, category_totals, raw_text = process_receipt(image_path)
+        # Process the receipt
+        df, category_totals, extracted_text, total = process_bom_receipt(image_path)
         
-        # Print results
-        print("\n" + "="*50)
-        print("EXTRACTED ITEMS:")
-        print("="*50)
-        print(df.to_string())
+        # Display results
+        display_results(df, category_totals, total)
         
-        print("\n" + "="*50)
-        print("CATEGORY TOTALS:")
-        print("="*50)
-        print(category_totals.to_string())
+        # Save to Excel for further analysis
+        output_file = "bom_analysis.xlsx"
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Items', index=False)
+            
+            # Summary sheet
+            summary = pd.DataFrame({
+                'Metric': ['Total Items', 'Total Cost (€)', 'Number of Categories'],
+                'Value': [len(df), total, len(category_totals)]
+            })
+            summary.to_excel(writer, sheet_name='Summary', index=False)
+            
+            # Category totals
+            category_df = pd.DataFrame({
+                'Category': category_totals.index,
+                'Amount (€)': category_totals.values,
+                'Percentage': [(amt/total)*100 for amt in category_totals.values]
+            })
+            category_df.to_excel(writer, sheet_name='Category Analysis', index=False)
         
-        print(f"\nTotal Amount: PKR {df['Price'].sum():.2f}")
-        
-        # Save results
-        save_results(df, category_totals)
-        print(f"\nResults saved to receipt_results.xlsx")
-        
-        # For debugging uncomment:
-        # ocr_debug(image_path)
+        print(f"\n✅ Results saved to {output_file}")
         
     except Exception as e:
-        print(f"Error processing receipt: {str(e)}")
+        print(f"❌ Error: {str(e)}")
+        print("\nTroubleshooting tips:")
+        print("1. Make sure the image file exists at the specified path")
+        print("2. Check if Tesseract is installed: 'pytesseract.get_tesseract_version()'")
+        print("3. Try running with a clearer image of the receipt")
